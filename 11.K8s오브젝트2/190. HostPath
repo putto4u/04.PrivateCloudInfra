@@ -1,0 +1,77 @@
+쿠버네티스(Kubernetes)에서 **hostPath**는 노드(Node)의 실제 물리적 파일 시스템에 있는 파일이나 디렉터리를 파드(Pod)에 마운트(Mount)하여 사용하는 스토리지 유형입니다.
+
+---
+
+## 1. hostPath의 개념 및 동작 원리
+
+보통 파드 내의 파일은 휘발성이지만, **hostPath**를 사용하면 파드가 삭제되어도 노드에 저장된 데이터는 유지됩니다. 이는 로컬 디스크의 특정 경로를 컨테이너 내부와 직접 연결하는 방식입니다.
+
+---
+
+## 2. 주요 사용 사례 (Use Cases)
+
+hostPath는 일반적인 애플리케이션 데이터를 저장하기보다는, 시스템 수준의 도구나 로컬 환경 테스트에 주로 사용됩니다.
+
+* **시스템 모니터링 및 로그 수집:** 노드의 `/var/log`를 마운트하여 컨테이너에서 시스템 로그를 분석할 때 (예: Fluentd, Logstash).
+* **도커 인 도커 (DinD):** 노드의 `/var/run/docker.sock`을 마운트하여 컨테이너 내부에서 도커 명령어를 실행할 때.
+* **로컬 개발 환경:** 단일 노드 클러스터(minikube 등)에서 개발자가 로컬 소스 코드를 즉시 반영하고 싶을 때.
+* **가속기 접근:** 노드의 `/dev` 디렉터리에 접근하여 하드웨어 장치(GPU 등)를 제어해야 할 때.
+
+---
+
+## 3. hostPath의 한계와 위험성 (보안 및 아키텍처)
+
+IT 전문가로서 설계 시 반드시 고려해야 할 주의사항입니다.
+
+* **노드 종속성:** 파드가 다른 노드로 스케줄링되면 이전 노드에 저장된 데이터에 접근할 수 없습니다. 즉, 다중 노드 환경에서는 데이터 일관성을 보장하지 않습니다.
+* **보안 취약점:** 파드가 노드의 루트 경로(`/`)나 주요 시스템 설정 파일에 접근할 수 있게 되면, 컨테이너 탈출을 통한 노드 권한 탈취 위험이 있습니다.
+* **수동 관리:** 노드 레벨에서 디렉터리 권한을 수동으로 관리해야 하며, 쿠버네티스가 노드 간의 데이터 동기화를 지원하지 않습니다.
+
+---
+
+## 4. 설정 예시 (YAML)
+
+다음은 노드의 `/data` 디렉터리를 파드의 `/usr/share/nginx/html` 경로에 연결하는 예시입니다.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hostpath-example
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    volumeMounts:
+    - mountPath: /usr/share/nginx/html
+      name: test-volume
+  volumes:
+  - name: test-volume
+    hostPath:
+      # 노드의 실제 경로
+      path: /data
+      # DirectoryOrCreate: 경로가 없으면 생성함
+      type: DirectoryOrCreate
+
+```
+
+---
+
+## 5. hostPath의 주요 Type 종류
+
+| Type | 설명 |
+| --- | --- |
+| **(Empty string)** | 기본값. 유효성 검사 없이 해당 경로를 사용 |
+| **DirectoryOrCreate** | 경로에 디렉터리가 없으면 755 권한으로 생성 |
+| **Directory** | 해당 경로에 디렉터리가 반드시 존재해야 함 |
+| **FileOrCreate** | 경로에 파일이 없으면 644 권한으로 생성 |
+| **File** | 해당 경로에 파일이 반드시 존재해야 함 |
+| **Socket / CharDevice** | 유닉스 소켓이나 캐릭터 장치 존재 여부 확인 |
+
+---
+
+## Next Step:
+
+**로컬 스토리지 관리를 위한 PV(PersistentVolume) 및 PVC 연동 실습**
+
+hostPath의 한계를 극복하기 위해 실무에서는 로컬 볼륨을 `PersistentVolume`으로 추상화하여 관리하곤 합니다. 이 방식이 hostPath와 어떻게 다른지, 더 안전한 스토리지 관리 방법을 확인해 볼까요?
