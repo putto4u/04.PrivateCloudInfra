@@ -1,0 +1,110 @@
+## Nginx와 Local Path 볼륨의 느슨한 결합(Loose Coupling) 구성
+
+애플리케이션의 실행 정의(Deployment)와 데이터 저장 정의(PVC)를 분리하여 관리하는 것은 쿠버네티스 운영의 핵심입니다. 이전의 Nginx 설정 파일에 볼륨 연결부만 추가하여, 서비스 설정과 스토리지 자원을 독립적으로 운영할 수 있도록 구성합니다.
+
+---
+
+### 1. 스토리지 자원 정의 (`ng-pvc.yaml`)
+
+애플리케이션과 상관없이 클러스터로부터 1GiB의 공간을 확보하는 선언입니다. 이 파일만으로는 아무런 동작을 하지 않으며, 누군가 이 이름을 불러주기를 기다리는 독립된 자원입니다.
+
+```yaml
+# ng-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ng-static-pvc
+  namespace: wb_prod
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+
+```
+
+---
+
+### 2. 애플리케이션 정의 (`ng-web-vol.yaml`)
+
+이전의 Nginx 배포 설정에 **"데이터는 ng-static-pvc라는 이름의 공간에서 가져온다"**는 연결 고리만 추가한 형태입니다. 이것이 바로 **느슨한 결합**입니다. 배포판(Deployment)은 스토리지가 실제로 어느 노드의 어느 경로에 있는지 알 필요가 없으며, 오직 PVC 이름만 참조합니다.
+
+```yaml
+# ng-web-vol.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ng-web
+  namespace: wb_prod
+  labels:
+    app: nginx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: web-data
+          mountPath: /usr/share/nginx/html # 컨테이너 내부 경로
+      volumes:
+      - name: web-data
+        persistentVolumeClaim:
+          claimName: ng-static-pvc # PVC 이름을 통해 느슨하게 연결
+
+```
+
+---
+
+### 3. 왜 이것이 느슨한 결합인가?
+
+1. **독립적 교체**: 만약 나중에 `local-path`가 아닌 고성능 클라우드 스토리지로 바꾸고 싶다면, `ng-web-vol.yaml`은 그대로 두고 `ng-pvc.yaml`의 스토리지 클래스만 수정하면 됩니다.
+2. **생명주기 분리**: Deployment를 삭제하더라도 PVC는 별도로 존재하므로, 실수로 애플리케이션을 지워도 데이터는 보존될 수 있는 구조를 가집니다.
+3. **추상화**: 개발자는 실제 서버의 하드디스크 경로를 알 필요 없이 `ng-static-pvc`라는 이름만 알면 데이터를 저장할 수 있습니다.
+
+---
+
+### 4. 실습 확인 절차
+
+**설정 적용**
+
+```bash
+# 순서에 상관없이 적용 가능 (결합이 느슨하기 때문)
+kubectl apply -f ng-pvc.yaml
+kubectl apply -f ng-web-vol.yaml
+
+```
+
+**연결 상태 확인**
+
+```bash
+# PVC와 PV가 정상적으로 Bound 되었는지 확인
+kubectl get pvc,pv -n wb_prod
+
+# Pod 상세 정보에서 볼륨 마운트 여부 확인
+kubectl describe pod ng-web -n wb_prod | grep -A 5 Volumes
+
+```
+
+> [!IMPORTANT]
+> **과금 관련 안내**:
+> 본 설정은 노드 내부의 디스크를 활용하므로 **추가적인 AWS EBS 비용 등은 발생하지 않습니다.** 하지만 실습 환경의 워커 노드 루트 볼륨 용량을 공유하므로 과도한 데이터 적재는 주의하십시오.
+
+---
+
+Next Step: **PVC 삭제 시 데이터 보존 여부를 결정하는 Reclaim Policy 설정**
+
+---
+
+기존 Nginx 설정이 포함된 이유는 쿠버네티스에서 볼륨을 사용하려면 결국 '어떤 포드(Deployment)'에 '어떤 볼륨(PVC)'을 붙일지 명시해야 하기 때문입니다. 다만, 두 설정을 별도의 파일로 나누고 이름을 통해 연결함으로써 인프라와 앱의 의존성을 최소화한 구조로 만들었습니다. 깃허브 포맷으로 정리했으니 그대로 활용하시면 됩니다.
